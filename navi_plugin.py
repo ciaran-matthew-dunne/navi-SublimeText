@@ -1,78 +1,97 @@
 import os, sys
+import requests, json
 import sublime, sublime_plugin
 import re
-sys.path.append('/home/ciaran/prog')
-import navi
-
 
 # Okay. Our main Navi python program needs to be running in Python 3.10 to access OpenAI and tinyGPT.
 # The plugin will just communicate between ST4 and Navi.
 # (e.g., bundles of code sent to ST4 for execution, state passed to Navi-GPT REPL, stdout in repl.) 
 
 def navi_to_sublime(navi_command):
-  active_view = sublime.active_window().active_view()
+    # Fetch active window and view
+    window = sublime.active_window()
+    view = window.active_view()
+    edit = view.begin_edit()
 
-  if navi_command.startswith("view-next"):
-      sublime.active_window().run_command('next_view')
+    # Parse the Navi command and extract the action and arguments
+    action_args = navi_command.split(' ')
+    action = action_args[0]
+    args = action_args[1:]
 
-  elif navi_command.startswith("view-prev"):
-      sublime.active_window().run_command('prev_view')
+    # Match action to corresponding Sublime Text command
+    if action == 'focus-group':
+        window.focus_group(int(args[0]))
+    elif action == 'focus-view':
+        view = window.views_in_group(window.active_group())[int(args[0])]
+        window.focus_view(view)
+    elif action == 'view-open':
+        window.open_file(args[0])
+    elif action == 'view-close':
+        window.run_command('close')
+    elif action == 'insert':
+        view.insert(edit, view.sel()[0].begin(), ' '.join(args))
+    elif action == 'insert-line':
+        view.insert(edit, view.sel()[0].begin(), ' '.join(args) + '\n')
+    elif action == 'delete':
+        region_to_erase = sublime.Region(view.sel()[0].begin(), view.sel()[0].begin() + int(args[0]))
+        view.erase(edit, region_to_erase)
+    elif action == 'delete-line':
+        line_region = view.line(view.sel()[0])
+        view.erase(edit, line_region)
+    elif action == 'select-all':
+        view.sel().clear()
+        view.sel().add(sublime.Region(0, view.size()))
+    elif action == 'select-word':
+        word_region = view.word(view.sel()[0])
+        view.sel().clear()
+        view.sel().add(word_region)
+    elif action == 'select-line':
+        line_region = view.line(view.sel()[0])
+        view.sel().clear()
+        view.sel().add(line_region)
+    elif action == 'move-to':
+        point = view.text_point(int(args[0]), int(args[1]))
+        view.sel().clear()
+        view.sel().add(sublime.Region(point))
+    elif action == 'find':
+        regions = view.find_all(args[0])
+        if regions:
+            view.sel().clear()
+            view.sel().add(regions[0])
+    elif action == 'copy':
+        sublime.set_clipboard(view.substr(view.sel()[0]))
+    elif action == 'paste':
+        view.insert(edit, view.sel()[0].begin(), sublime.get_clipboard())
+    elif action == 'undo':
+        view.run_command('undo')
+    elif action == 'redo':
+        view.run_command('redo')
+    elif action == 'replace':
+        view.run_command('replace_all', {"find": args[0], "replace": args[1]})
+    elif action == 'save':
+        view.run_command('save')
+    elif action == 'rename':
+        os.rename(args[0], args[1])
+    elif action == 'create-dir':
+        os.makedirs(args[0], exist_ok=True)
+    elif action == 'delete-file':
+        os.remove(args[0])
+    elif action == 'comment-line':
+        view.run_command('toggle_comment', {"block": False})
+    elif action == 'uncomment-line':
+        view.run_command('toggle_comment', {"block": False})
+    elif action == 'indent':
+        view.run_command('indent')
+    elif action == 'dedent':
+        view.run_command('dedent')
 
-  elif navi_command.startswith("view-goto"):
-      # Note: Sublime Text API does not have a direct goto_view command
-      pass
+    view.end_edit(edit)  
 
-  elif navi_command.startswith("view-close"):
-      active_view.run_command('close')
-
-  elif navi_command.startswith("tab-new"):
-      sublime.active_window().run_command('new_file')
-
-  elif navi_command.startswith("tab-close"):
-      active_view.run_command('close')
-
-  elif navi_command.startswith("insert"):
-      text = navi_command.split(' ', 1)[1]
-      active_view.run_command('insert', {'characters': text})
-
-  elif navi_command.startswith("delete"):
-      num_chars = int(navi_command.split(' ')[1])
-      active_view.run_command('left_delete')
-
-  elif navi_command.startswith("delete-line"):
-      active_view.run_command('delete_line')
-
-  elif navi_command.startswith("select-all"):
-      active_view.run_command('select_all')
-
-  elif navi_command.startswith("select-word"):
-      active_view.run_command('expand_selection', {'to': 'word'})
-
-  elif navi_command.startswith("select-line"):
-      active_view.run_command('expand_selection', {'to': 'line'})
-
-  elif navi_command.startswith("move-to"):
-      row, col = map(int, navi_command.split(' ')[1:])
-      pt = active_view.text_point(row - 1, col)
-      active_view.sel().clear()
-      active_view.sel().add(sublime.Region(pt))
-
-  elif navi_command.startswith("find"):
-      pattern = navi_command.split(' ', 1)[1]
-      active_view.window().run_command('show_panel', {"panel": "find", "reverse": False})
-      active_view.window().run_command('insert', {"characters": pattern})
-      active_view.window().run_command('find_next')
-
-  elif navi_command.startswith("scroll-up"):
-      active_view.run_command('scroll_lines', {'amount': int(navi_command.split(' ')[1])})
-
-  elif navi_command.startswith("scroll-down"):
-      active_view.run_command('scroll_lines', {'amount': -int(navi_command.split(' ')[1])})
-
-# 1b. Write a function that streams the incoming Navi script from GPT to executions of the corresponding SublimeText python code.  
 def process_navi_script(navi_script):
+  # Split the script into separate commands and execute each one
   for command in navi_script.split('\n'):
-      navi_to_sublime(command)
+      if command:  # Ignore empty commands
+          navi_to_sublime(command)
 
 def get_cursors(view):
   return [ 
@@ -113,17 +132,10 @@ def view_tree(win): # Create a tree representation of views and their cursor pos
   for group in range(win.num_groups()):
     view_tree[group] = []
     for view in win.views_in_group(group):
-      view_str = ""
-      vname = view.file_name() if view.file_name() else "Untitled"
-      ## Add cursor(s)
-      curs = get_cursors(view)
-      curs = (curs[0] if len(curs) == 1 else curs)
-      view_str = "{} : {}".format(vname, curs)
-      if view == win.active_view():
-        preview = grab_text(10, view, get_cursors(view))
-        view_str = "=> {}\n{}".format(view_str,preview)
-      else:
-        view_str = "- {}".format(view_str)
+      vname = view.file_name() if view.file_name() else "untitled"
+      (line,col) = get_cursors(view)[0]
+      token = '=>' if view == win.active_view_in_group(group) else ' >' 
+      view_str = "{} {}   (line: {}, column: {})".format(token, vname, line, col)
       view_tree[group].append(view_str)
   return view_tree
 
@@ -132,32 +144,26 @@ def view_tree(win): # Create a tree representation of views and their cursor pos
 def sublime_state():
   window = sublime.active_window()
   aview = window.active_view()
-  current_file = aview.file_name() if window.active_view() else "Untitled"
   state_info = ""
   # Construct the state information string
   for group, views in view_tree(window).items():
-    state_info += "Group {}:\n".format(group)
-    for view in views:
-      state_info += "{}\n".format(view)
-  return "*------ SUBLIME TEXT STATE --------*\n{}\n*----------------------------------*".format(state_info)
-
-
-
+    state_info += "Views in group {}:\n".format(group)
+    for i, view in enumerate(views):
+      state_info += "{} {}\n".format(i, view)
+  return state_info
 
 # Command for sending prompt to Navi server 
 class NaviCommand(sublime_plugin.TextCommand):
+
   def run(self, edit):
     sublime.active_window().show_input_panel("", "", self.on_done, None, None)
 
   def on_done(self, user_input):
-    txt = re.sub(pattern=r"\\",repl=r"\\\\", string=user_input)
-    code = r'prompt = """{}"""'.format(txt)
-    win = self.view.window()
-
-    win.run_command('repl_send', 
-      {"external_id": 'python', 
-       "text": f'chat_sys(navi_gpt_config, """{sublime_state()}""")'})
-    win.run_command('repl_send', 
-      {"external_id": 'python',
-       "text": f'eng_to_navi("""{user_input}""")'})
-
+    url = "http://localhost:5000/receive"
+    headers = {"Content-Type": "application/json"}
+    subl_data = json.dumps(
+      {"user_prompt" : user_input, 
+       "subl_state" : sublime_state()
+      })
+    response = requests.post(url, headers=headers, data=subl_data)
+    
